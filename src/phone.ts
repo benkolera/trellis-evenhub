@@ -1,15 +1,18 @@
-// Phone-side UI shown when the plugin is launched from the Even App
-// menu (not the glasses menu). Pair / unpair lives here because the
-// glasses themselves have no alphanumeric input — the 6-char code
-// has to be typed somewhere with a keyboard.
+// Phone-side UI. Two modes:
+//   * Not paired → show the 6-char code form.
+//   * Paired    → show live state cards (the same data the HUD renders).
+// Both modes subscribe to the shared store so we surface whatever
+// the API last returned, including errors and stale state.
 
 import { ApiError, pair as apiPair, unpair as apiUnpair } from "./api";
 import {
   clearToken,
   getBaseUrl,
-  isPaired,
   setBaseUrl,
 } from "./storage";
+import { store, type Snapshot } from "./store";
+import { formatHhMm, formatMmSs } from "./timer";
+import type { FocusState, HabitToday, NextEntry, NowEntry } from "./types";
 
 export function mountPhoneUi(): void {
   const app = document.getElementById("app");
@@ -18,25 +21,18 @@ export function mountPhoneUi(): void {
   bindPairForm();
   bindBaseUrl();
   bindUnpair();
-  showCurrentView();
+  bindRefresh();
+
+  store.subscribe((snapshot) => {
+    showView("view-pair", !snapshot.paired);
+    showView("view-paired", snapshot.paired);
+    if (snapshot.paired) renderStatePanel(snapshot);
+  });
+
   app.hidden = false;
 }
 
-function showCurrentView(): void {
-  show("view-pair", !isPaired());
-  show("view-paired", isPaired());
-}
-
-function show(id: string, visible: boolean): void {
-  const el = document.getElementById(id);
-  if (el) el.hidden = !visible;
-}
-
-function setError(message: string | null): void {
-  const el = document.getElementById("pair-error");
-  if (!el) return;
-  el.textContent = message ?? "";
-}
+// ---- pairing ----
 
 function bindPairForm(): void {
   const form = document.getElementById("pair-form") as HTMLFormElement | null;
@@ -44,10 +40,6 @@ function bindPairForm(): void {
   const submit = document.getElementById("pair-submit") as HTMLButtonElement | null;
   if (!form || !code || !submit) return;
 
-  // Normalise input to uppercase + filter to our alphabet. The
-  // backend alphabet is ABCDEFGHJKMNPQRSTUVWXYZ23456789 — no
-  // 0/O/1/I/L — but the friendlier UX is to accept and pre-fix
-  // common confusable typings then let the server reject if needed.
   code.addEventListener("input", () => {
     const cleaned = code.value
       .toUpperCase()
@@ -55,7 +47,7 @@ function bindPairForm(): void {
       .slice(0, 6);
     if (cleaned !== code.value) code.value = cleaned;
     submit.disabled = cleaned.length !== 6;
-    setError(null);
+    setPairError(null);
   });
 
   form.addEventListener("submit", async (e) => {
@@ -63,14 +55,14 @@ function bindPairForm(): void {
     if (code.value.length !== 6 || submit.disabled) return;
     submit.disabled = true;
     submit.textContent = "Pairing…";
-    setError(null);
+    setPairError(null);
 
     try {
       await apiPair(code.value, deviceLabel());
       code.value = "";
-      showCurrentView();
+      store.notifyPaired();
     } catch (err) {
-      setError(humanError(err));
+      setPairError(humanError(err));
     } finally {
       submit.textContent = "Pair";
       submit.disabled = code.value.length !== 6;
@@ -101,18 +93,122 @@ function bindUnpair(): void {
     try {
       await apiUnpair();
     } catch {
-      // Server may already be gone; clear local state regardless.
       clearToken();
     }
+    store.notifyUnpaired();
     btn.textContent = "Unpair this device";
     btn.disabled = false;
-    showCurrentView();
   });
 }
 
+function bindRefresh(): void {
+  const btn = document.getElementById("refresh") as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.addEventListener("click", () => void store.forceRefresh());
+}
+
+// ---- live state rendering ----
+
+function renderStatePanel(snapshot: Snapshot): void {
+  setText("status-line", statusLine(snapshot));
+  setText("status-error", snapshot.lastError?.message ?? "");
+  showView("status-error", snapshot.lastError !== null);
+
+  renderNow(snapshot.state?.now ?? null);
+  renderNext(snapshot.state?.next ?? null);
+  renderFocus(snapshot.state?.focus ?? null);
+  renderHabits(snapshot.state?.habits_today ?? []);
+
+  const refresh = document.getElementById("refresh") as HTMLButtonElement | null;
+  if (refresh) {
+    refresh.disabled = snapshot.isPolling;
+    refresh.textContent = snapshot.isPolling ? "Refreshing…" : "Refresh now";
+  }
+}
+
+function statusLine(snapshot: Snapshot): string {
+  if (snapshot.lastError) return "Last fetch failed";
+  if (!snapshot.lastFetchedAt) return snapshot.isPolling ? "Loading…" : "Waiting for first fetch…";
+  return `Last fetched ${formatRelative(snapshot.lastFetchedAt)}`;
+}
+
+function renderNow(now: NowEntry | null): void {
+  if (!now) {
+    setText("now-title", "—");
+    setText("now-meta", "Nothing in progress");
+    return;
+  }
+  setText("now-title", now.title);
+  setText("now-meta", `${formatHhMm(now.ends_in_s)} left`);
+}
+
+function renderNext(next: NextEntry | null): void {
+  if (!next) {
+    setText("next-title", "—");
+    setText("next-meta", "Nothing upcoming");
+    return;
+  }
+  setText("next-title", next.title);
+  setText("next-meta", `in ${formatHhMm(next.starts_in_s)}`);
+}
+
+function renderFocus(focus: FocusState | null): void {
+  const card = document.getElementById("card-focus");
+  if (!card) return;
+  if (!focus) {
+    card.hidden = false;
+    setText("focus-title", "No focus session");
+    setText("focus-meta", "Start one in Trellis.");
+    return;
+  }
+  card.hidden = false;
+  const kind = focus.state === "work" ? "Focus" : "Break";
+  setText("focus-title", focus.target ? `${kind} · ${focus.target}` : kind);
+  setText("focus-meta", `${formatMmSs(focus.ends_in_s)} remaining`);
+}
+
+function renderHabits(habits: HabitToday[]): void {
+  const list = document.getElementById("habits-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (habits.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "All done. Nice.";
+    li.className = "habit-empty";
+    list.appendChild(li);
+    return;
+  }
+  for (const h of habits) {
+    const li = document.createElement("li");
+    li.className = "habit-row";
+    const title = document.createElement("span");
+    title.className = "habit-title";
+    title.textContent = h.title;
+    const meta = document.createElement("span");
+    meta.className = "habit-meta";
+    meta.textContent = `${h.done} / ${h.target} · ${h.period}`;
+    li.append(title, meta);
+    list.appendChild(li);
+  }
+}
+
+// ---- helpers ----
+
+function showView(id: string, visible: boolean): void {
+  const el = document.getElementById(id);
+  if (el) el.hidden = !visible;
+}
+
+function setText(id: string, text: string): void {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function setPairError(message: string | null): void {
+  setText("pair-error", message ?? "");
+}
+
 function deviceLabel(): string {
-  // Best-effort: glasses won't expose a useful UA, so keep it short
-  // and obvious in the Settings list rather than parsing UA strings.
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
   return isIOS ? "Even Hub · iOS" : "Even Hub · Android";
 }
@@ -130,4 +226,13 @@ function humanError(err: unknown): string {
     return `Pairing failed (HTTP ${err.status}).`;
   }
   return "Couldn't reach Trellis. Check the backend URL.";
+}
+
+function formatRelative(when: Date): string {
+  const diff = Math.max(0, Math.round((Date.now() - when.getTime()) / 1000));
+  if (diff < 5) return "just now";
+  if (diff < 60) return `${diff}s ago`;
+  const m = Math.floor(diff / 60);
+  if (m < 60) return `${m}m ago`;
+  return when.toLocaleTimeString();
 }

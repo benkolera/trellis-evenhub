@@ -53,6 +53,19 @@
       details .row button { margin-top: 0; width: auto; padding: 12px 16px; }
       .device-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; font-size: 14px; }
       .device-row .meta { color: var(--muted); font-size: 12px; }
+      .small { font-size: 13px; color: var(--muted); }
+      .status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+      .meta { color: var(--muted); font-size: 13px; margin: 0; }
+      button.inline { width: auto; padding: 8px 12px; font-size: 13px; margin-top: 0; }
+      .preview { padding: 16px 20px; }
+      .preview-heading { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.1em; }
+      .preview-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+      .habits { list-style: none; margin: 4px 0 0; padding: 0; }
+      .habit-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 14px; }
+      .habit-row + .habit-row { border-top: 1px solid var(--border); }
+      .habit-title { font-weight: 500; }
+      .habit-meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .habit-empty { color: var(--muted); font-size: 14px; padding: 4px 0; }
     </style>
   </head>
   <body>
@@ -95,13 +108,46 @@
         </details>
       </section>
 
-      <section id="view-paired" class="card" hidden>
-        <p class="status"><span class="dot"></span>Paired with Trellis</p>
-        <p class="lead">
-          Open Trellis from the <strong>glasses menu</strong> to see your now,
-          next, focus countdown, and habits on the HUD.
-        </p>
-        <button id="unpair" type="button" class="danger">Unpair this device</button>
+      <section id="view-paired" hidden>
+        <div class="card">
+          <p class="status"><span class="dot"></span>Paired with Trellis</p>
+          <p class="lead small">
+            This is exactly what the HUD is rendering. Open Trellis from
+            the <strong>glasses menu</strong> to see it on your G2.
+          </p>
+          <div class="status-row">
+            <span id="status-line" class="meta">Loading…</span>
+            <button id="refresh" type="button" class="secondary inline">Refresh now</button>
+          </div>
+          <p id="status-error" class="error" hidden></p>
+        </div>
+
+        <div class="card preview">
+          <h2 class="preview-heading">Now</h2>
+          <p id="now-title" class="preview-title">—</p>
+          <p id="now-meta" class="meta">Waiting…</p>
+        </div>
+
+        <div class="card preview">
+          <h2 class="preview-heading">Next</h2>
+          <p id="next-title" class="preview-title">—</p>
+          <p id="next-meta" class="meta">Waiting…</p>
+        </div>
+
+        <div id="card-focus" class="card preview">
+          <h2 class="preview-heading">Focus</h2>
+          <p id="focus-title" class="preview-title">—</p>
+          <p id="focus-meta" class="meta">Waiting…</p>
+        </div>
+
+        <div class="card preview">
+          <h2 class="preview-heading">Habits today</h2>
+          <ul id="habits-list" class="habits"></ul>
+        </div>
+
+        <div class="card">
+          <button id="unpair" type="button" class="danger">Unpair this device</button>
+        </div>
       </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
