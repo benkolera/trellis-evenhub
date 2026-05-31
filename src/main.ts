@@ -1,35 +1,69 @@
 // Trellis Even Hub plugin entry point.
 //
-// State machine:
-//   * No token → Pair screen until a code is redeemed.
-//   * Token present → Home (Now/Next) by default; cycle Home ↔ Focus
-//     ↔ Habits via swipe up/down. Double-press forces a poll.
+// The plugin has two surfaces depending on how the user launched it:
 //
-// Polling:
-//   * 30s by default. Drops to 5s while a focus session is active so
-//     the countdown reconciles often. Between polls, the local Ticker
-//     decrements ends_in_s / starts_in_s every second.
+//   * **appMenu** — opened from the Even App's plugin list. The
+//     phone screen is visible; we render an HTML form for entering
+//     the pairing code (the HUD has no keyboard).
+//
+//   * **glassesMenu** — opened from the glasses wheel. The WebView
+//     runs in the background; we drive the HUD via the SDK.
+//
+// `bridge.onLaunchSource(...)` fires exactly once after the WebView
+// loads, so we register the listener immediately. If it never fires
+// (e.g. dev preview in a browser, or the simulator running without
+// a launch-source push), we fall back to phone-UI mode after a
+// short grace period so the app isn't blank.
 
-import { ApiError, fetchState, pair as apiPair, unpair as apiUnpair } from "./api";
+import { waitForEvenAppBridge } from "@evenrealities/even_hub_sdk";
+
+import {
+  ApiError,
+  fetchState,
+} from "./api";
 import { onInput, render, type InputEvent } from "./glasses";
+import { mountPhoneUi } from "./phone";
 import { renderFocus } from "./screens/focus";
 import { renderHabits } from "./screens/habits";
 import { renderHome } from "./screens/home";
-import { renderPair, type PairScreenState } from "./screens/pair";
+import { renderNotPaired } from "./screens/pair";
 import { Ticker } from "./timer";
 import type { Screen, TrellisState } from "./types";
 import { isPaired } from "./storage";
 
 const POLL_MS_IDLE = 30_000;
 const POLL_MS_FOCUS = 5_000;
+const LAUNCH_SOURCE_FALLBACK_MS = 1500;
 
-class App {
+void boot();
+
+async function boot(): Promise<void> {
+  const bridge = await waitForEvenAppBridge();
+
+  let started = false;
+  const start = (mode: "phone" | "glasses") => {
+    if (started) return;
+    started = true;
+    if (mode === "phone") {
+      mountPhoneUi();
+    } else {
+      new HudController().start();
+    }
+  };
+
+  bridge.onLaunchSource((source) => {
+    start(source === "glassesMenu" ? "glasses" : "phone");
+  });
+
+  // Fallback for environments without a launch-source push.
+  setTimeout(() => start("phone"), LAUNCH_SOURCE_FALLBACK_MS);
+}
+
+class HudController {
   private screen: Screen = isPaired() ? "home" : "pair";
   private trellis: TrellisState | null = null;
   private pollHandle: number | null = null;
   private pollMs = POLL_MS_IDLE;
-  private pair: PairScreenState = { step: "intro", code: "" };
-
   private readonly ticker = new Ticker(() => this.onTick(), 1000);
 
   start(): void {
@@ -40,13 +74,8 @@ class App {
     this.draw();
   }
 
-  // ---- input ----
-
   private onInput(event: InputEvent): void {
-    if (this.screen === "pair") {
-      this.handlePairInput(event);
-      return;
-    }
+    if (this.screen === "pair") return; // Nothing actionable from the HUD here.
 
     switch (event) {
       case "swipe_up":
@@ -59,53 +88,11 @@ class App {
         void this.poll();
         break;
       case "press":
-        // Reserved for screen-specific action (e.g. start a break).
+        // Reserved for screen-specific action later (e.g. break/skip).
         break;
     }
     this.draw();
   }
-
-  private handlePairInput(event: InputEvent): void {
-    switch (this.pair.step) {
-      case "intro":
-        if (event === "press") this.pair = { step: "entering", code: "" };
-        break;
-      case "entering":
-        if (event === "press" && this.pair.code.length === 6) {
-          void this.submitPair();
-        } else if (event === "swipe_up" || event === "swipe_down") {
-          this.pair = { step: "intro", code: "" };
-        }
-        // TODO: glasses don't have alphanumeric entry — final UX is
-        // that the user types the code on the Even companion app's
-        // pairing screen, not on the HUD. Keeping `entering` here
-        // for completeness; it'll be driven by the phone-side UI.
-        break;
-      case "error":
-        if (event === "press") this.pair = { step: "intro", code: "" };
-        break;
-      case "verifying":
-        break;
-    }
-    this.draw();
-  }
-
-  private async submitPair(): Promise<void> {
-    this.pair = { step: "verifying", code: this.pair.code };
-    this.draw();
-    try {
-      await apiPair(this.pair.code, "Even Hub");
-      this.screen = "home";
-      this.pair = { step: "intro", code: "" };
-      await this.poll();
-    } catch (err) {
-      const msg = err instanceof ApiError ? errorMessage(err) : "Network error";
-      this.pair = { step: "error", code: "", error: msg };
-    }
-    this.draw();
-  }
-
-  // ---- polling ----
 
   private async poll(): Promise<void> {
     if (!isPaired()) {
@@ -116,6 +103,7 @@ class App {
 
     try {
       this.trellis = await fetchState();
+      if (this.screen === "pair") this.screen = "home";
       this.adjustPollCadence();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -140,8 +128,6 @@ class App {
       this.schedulePoll();
     }
   }
-
-  // ---- local ticker (between polls) ----
 
   private onTick(): void {
     if (!this.trellis) return;
@@ -169,11 +155,9 @@ class App {
     if (changed) this.draw();
   }
 
-  // ---- rendering ----
-
   private draw(): void {
     if (this.screen === "pair" || !this.trellis) {
-      render(renderPair(this.pair));
+      render(renderNotPaired());
       return;
     }
 
@@ -189,14 +173,6 @@ class App {
         return;
     }
   }
-
-  // Test hook — not used in prod.
-  async unpair(): Promise<void> {
-    await apiUnpair();
-    this.screen = "pair";
-    this.trellis = null;
-    this.draw();
-  }
 }
 
 function nextScreen(s: Screen): Screen {
@@ -210,15 +186,3 @@ function previousScreen(s: Screen): Screen {
   const i = order.indexOf(s);
   return order[(i - 1 + order.length) % order.length] ?? "home";
 }
-
-function errorMessage(err: ApiError): string {
-  if (err.status === 422) {
-    const body = err.body as { error?: string } | null;
-    if (body?.error === "expired_code") return "Code expired";
-    if (body?.error === "invalid_code") return "Invalid code";
-  }
-  if (err.status === 401) return "Unauthorised";
-  return `Error ${err.status}`;
-}
-
-new App().start();

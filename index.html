@@ -2,10 +2,108 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Trellis on Even Hub</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>Trellis</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0b0d10;
+        --fg: #e8eaed;
+        --muted: #9aa0a6;
+        --accent: #4ea1ff;
+        --error: #ff6b6b;
+        --card: #15181d;
+        --border: #2a2f37;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+      main { max-width: 480px; margin: 0 auto; padding: max(env(safe-area-inset-top), 24px) 20px 32px; }
+      header h1 { margin: 0 0 4px; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+      header .sub { margin: 0 0 28px; color: var(--muted); font-size: 14px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+      .lead { margin: 0 0 16px; color: var(--fg); font-size: 15px; line-height: 1.45; }
+      label { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+      input[type="text"], input[type="url"] {
+        width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+        border-radius: 10px; padding: 14px 16px; font-size: 16px; outline: none;
+      }
+      input[type="text"]:focus, input[type="url"]:focus { border-color: var(--accent); }
+      input#pair-code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 24px; letter-spacing: 0.4em; text-align: center; text-transform: uppercase;
+      }
+      button {
+        width: 100%; margin-top: 12px; background: var(--accent); color: #0b0d10;
+        font-weight: 600; font-size: 16px; border: none; border-radius: 10px; padding: 14px;
+        cursor: pointer; -webkit-tap-highlight-color: transparent;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+      button.danger { background: transparent; color: var(--error); border: 1px solid var(--border); }
+      .error { color: var(--error); font-size: 14px; margin: 12px 0 0; min-height: 18px; }
+      .status { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+      .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #58d68d; margin-right: 8px; vertical-align: middle; }
+      details { margin-top: 12px; color: var(--muted); font-size: 13px; }
+      details summary { cursor: pointer; padding: 8px 0; }
+      details .row { display: flex; gap: 8px; margin-top: 8px; }
+      details .row input { flex: 1; }
+      details .row button { margin-top: 0; width: auto; padding: 12px 16px; }
+      .device-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; font-size: 14px; }
+      .device-row .meta { color: var(--muted); font-size: 12px; }
+    </style>
   </head>
   <body>
+    <main id="app" hidden>
+      <header>
+        <h1>Trellis</h1>
+        <p class="sub">on Even Realities G2</p>
+      </header>
+
+      <section id="view-pair" class="card" hidden>
+        <p class="lead">
+          In Trellis: <strong>Settings → Even Hub glasses → Pair Even Hub plugin</strong>.
+          Enter the 6-character code below.
+        </p>
+        <form id="pair-form">
+          <label for="pair-code">Pairing code</label>
+          <input
+            id="pair-code"
+            name="code"
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            autocapitalize="characters"
+            autocorrect="off"
+            spellcheck="false"
+            maxlength="6"
+            placeholder="------"
+            required
+          />
+          <button id="pair-submit" type="submit" disabled>Pair</button>
+        </form>
+        <p id="pair-error" class="error"></p>
+
+        <details>
+          <summary>Backend URL</summary>
+          <div class="row">
+            <input id="base-url" type="url" placeholder="https://trellis.benkolera.com" />
+            <button id="base-url-save" type="button" class="secondary">Save</button>
+          </div>
+        </details>
+      </section>
+
+      <section id="view-paired" class="card" hidden>
+        <p class="status"><span class="dot"></span>Paired with Trellis</p>
+        <p class="lead">
+          Open Trellis from the <strong>glasses menu</strong> to see your now,
+          next, focus countdown, and habits on the HUD.
+        </p>
+        <button id="unpair" type="button" class="danger">Unpair this device</button>
+      </section>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

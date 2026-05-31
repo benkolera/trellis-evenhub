@@ -109,16 +109,19 @@ export function onInput(handler: InputHandler): void {
 }
 
 function mapInput(event: EvenHubEvent): InputEvent | null {
-  // Whichever container raised the event, we only care about the
-  // four user-input types. Sys events (foreground enter/exit, IMU,
-  // …) are ignored at this layer.
-  const eventType =
-    event.textEvent?.eventType ??
-    event.listEvent?.eventType ??
-    (event.sysEvent?.eventType as OsEventTypeList | undefined);
+  // Sys events (foreground enter/exit, IMU, system exit) aren't user
+  // input — drop them at this layer.
+  if (event.sysEvent) return null;
 
-  switch (eventType) {
+  const userEvent = event.textEvent ?? event.listEvent;
+  if (!userEvent) return null;
+
+  // Per the Even Hub docs, a single tap may arrive with `eventType`
+  // unset; that case is equivalent to CLICK_EVENT and must be
+  // handled, otherwise pressing the touchpad does nothing.
+  switch (userEvent.eventType) {
     case OsEventTypeList.CLICK_EVENT:
+    case undefined:
       return "press";
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       return "double_press";
