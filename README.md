@@ -85,11 +85,18 @@ src/
 ```
 npm install
 npx evenhub login          # one-time
-npx evenhub init           # generates app.json
-npm run dev                # vite dev server (for phone-side previews)
-npx evenhub qr             # show QR for hot-reload on the companion app
-npm run pack               # produce a .ehpk for distribution
+npm run dev                # vite dev server on :5173
+npm run simulator          # desktop HUD preview pointing at the dev server
+npm run qr -- -i <LAN-ip> -p 5173   # QR for real-glasses sideload (hot reload)
+npm run build              # tsc + vite build → dist/
+npm run pack               # dist/ + app.json → trellis.ehpk (validates package_id)
 ```
+
+Upload the resulting `trellis.ehpk` via the dev portal at
+[hub.evenrealities.com](https://hub.evenrealities.com) to install it
+permanently on your own paired glasses. `app.json` (already in the
+repo) holds the `package_id` (`com.benkolera.trellis`) and the network
+whitelist for the Trellis backend.
 
 Set `TRELLIS_BASE_URL` (or call `setBaseUrl()` from a dev console) to
 point at a local Trellis (`http://localhost:4000`) instead of prod.
