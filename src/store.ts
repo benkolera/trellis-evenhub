@@ -7,7 +7,7 @@ import { ApiError, fetchState } from "./api";
 import { isPaired } from "./storage";
 import type { TrellisState } from "./types";
 
-const POLL_MS_IDLE = 30_000;
+const POLL_MS_IDLE = 15_000;
 const POLL_MS_FOCUS = 5_000;
 
 export interface Snapshot {
@@ -16,6 +16,14 @@ export interface Snapshot {
   lastFetchedAt: Date | null;
   lastError: { status?: number; message: string } | null;
   isPolling: boolean;
+  /**
+   * Incremented every time a wake-worthy change is detected on the
+   * server (new now/next entry, focus session transition). Subscribers
+   * compare against the previously-seen value to know whether the
+   * update is "user-noticeable" (wake the HUD) vs. just a local tick
+   * (silent re-render). Habit progress is excluded — not urgent.
+   */
+  changeSeq: number;
 }
 
 type Listener = (snapshot: Snapshot) => void;
@@ -27,11 +35,13 @@ class Store {
     lastFetchedAt: null,
     lastError: null,
     isPolling: false,
+    changeSeq: 0,
   };
   private readonly listeners = new Set<Listener>();
   private pollHandle: number | null = null;
   private tickHandle: number | null = null;
   private pollMs = POLL_MS_IDLE;
+  private prevFingerprint: string = "";
 
   start(): void {
     if (this.tickHandle === null) {
@@ -90,12 +100,21 @@ class Store {
     this.set({ isPolling: true });
     try {
       const state = await fetchState();
+      const fp = wakeFingerprint(state);
+      const isFirst = this.prevFingerprint === "";
+      const isWake = !isFirst && fp !== this.prevFingerprint;
+      this.prevFingerprint = fp;
+
       this.set({
         state,
         paired: true,
         lastFetchedAt: new Date(),
         lastError: null,
         isPolling: false,
+        // First-ever fetch counts as a wake too — gets the HUD onto
+        // the home screen instead of leaving "Trellis: not paired".
+        changeSeq:
+          isWake || isFirst ? this.snapshot.changeSeq + 1 : this.snapshot.changeSeq,
       });
       this.adjustPollCadence();
     } catch (err) {
@@ -130,6 +149,26 @@ class Store {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener(this.snapshot);
   }
+}
+
+/**
+ * Stable string capturing only the fields whose change should wake
+ * the HUD. Habits are excluded — completing a habit on the web UI
+ * shouldn't pop the display up while you're driving.
+ */
+function wakeFingerprint(state: TrellisState | null): string {
+  if (!state) return "null";
+  return JSON.stringify({
+    now: state.now && { title: state.now.title, ends_at: state.now.ends_at },
+    next:
+      state.next && { title: state.next.title, starts_at: state.next.starts_at },
+    focus:
+      state.focus && {
+        state: state.focus.state,
+        target: state.focus.target,
+        ends_at: state.focus.ends_at,
+      },
+  });
 }
 
 function toError(err: unknown): { status?: number; message: string } {
