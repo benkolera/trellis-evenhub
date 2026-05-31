@@ -30,6 +30,7 @@ export function startHud(): void {
     lastError: null,
     isPolling: false,
     changeSeq: 0,
+    streamStatus: "disconnected",
   };
   let lastSeenSeq = 0;
   let asleep = false;

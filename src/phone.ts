@@ -114,6 +114,7 @@ function renderStatePanel(snapshot: Snapshot): void {
   setText("status-error", snapshot.lastError?.message ?? "");
   showView("status-error", snapshot.lastError !== null);
 
+  renderStreamPill(snapshot);
   renderNow(snapshot.state?.now ?? null);
   renderNext(snapshot.state?.next ?? null);
   renderFocus(snapshot.state?.focus ?? null);
@@ -123,6 +124,25 @@ function renderStatePanel(snapshot: Snapshot): void {
   if (refresh) {
     refresh.disabled = snapshot.isPolling;
     refresh.textContent = snapshot.isPolling ? "Refreshing…" : "Refresh now";
+  }
+}
+
+function renderStreamPill(snapshot: Snapshot): void {
+  const el = document.getElementById("stream-status");
+  if (!el) return;
+  const { label, cls } = streamPill(snapshot.streamStatus);
+  el.textContent = label;
+  el.className = `pill ${cls}`;
+}
+
+function streamPill(status: Snapshot["streamStatus"]): { label: string; cls: string } {
+  switch (status) {
+    case "connected":
+      return { label: "push: live", cls: "pill-on" };
+    case "connecting":
+      return { label: "push: connecting", cls: "pill-warn" };
+    case "disconnected":
+      return { label: "push: off", cls: "pill-off" };
   }
 }
 

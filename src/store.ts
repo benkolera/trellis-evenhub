@@ -4,6 +4,7 @@
 // the phone view shows exactly what the HUD is seeing.
 
 import { ApiError, fetchState } from "./api";
+import { connectStream, type StreamHandle, type StreamStatus } from "./sse";
 import { isPaired } from "./storage";
 import type { TrellisState } from "./types";
 
@@ -24,6 +25,12 @@ export interface Snapshot {
    * (silent re-render). Habit progress is excluded — not urgent.
    */
   changeSeq: number;
+  /**
+   * State of the long-lived SSE connection used for push. Polling
+   * continues as a safety net regardless of this value — it's
+   * displayed in the phone debug panel for diagnostics.
+   */
+  streamStatus: StreamStatus;
 }
 
 type Listener = (snapshot: Snapshot) => void;
@@ -36,12 +43,14 @@ class Store {
     lastError: null,
     isPolling: false,
     changeSeq: 0,
+    streamStatus: "disconnected",
   };
   private readonly listeners = new Set<Listener>();
   private pollHandle: number | null = null;
   private tickHandle: number | null = null;
   private pollMs = POLL_MS_IDLE;
   private prevFingerprint: string = "";
+  private stream: StreamHandle | null = null;
 
   start(): void {
     if (this.tickHandle === null) {
@@ -49,6 +58,7 @@ class Store {
     }
     void this.poll();
     this.schedulePoll();
+    this.openStream();
   }
 
   subscribe(listener: Listener): () => void {
@@ -61,11 +71,32 @@ class Store {
   notifyPaired(): void {
     this.set({ paired: isPaired(), lastError: null });
     void this.poll();
+    this.openStream();
   }
 
   /** Call after an unpair so listeners drop back to the "not paired" view. */
   notifyUnpaired(): void {
+    this.closeStream();
     this.set({ paired: false, state: null, lastFetchedAt: null, lastError: null });
+  }
+
+  // ---- SSE wiring ----
+
+  private openStream(): void {
+    this.closeStream();
+    if (!isPaired()) return;
+    this.stream = connectStream({
+      onChange: () => void this.poll(),
+      onStatus: (streamStatus) => this.set({ streamStatus }),
+    });
+  }
+
+  private closeStream(): void {
+    if (this.stream) {
+      this.stream.close();
+      this.stream = null;
+    }
+    this.set({ streamStatus: "disconnected" });
   }
 
   /** User-triggered refresh (double-press on the HUD, button on the phone). */
