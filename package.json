@@ -13,7 +13,7 @@
     "qr": "evenhub qr"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "*"
+    "@evenrealities/even_hub_sdk": "^0.0.10"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

@@ -1,51 +1,124 @@
-// Thin abstraction over @evenrealities/even_hub_sdk. All other modules
-// import from here, so when the upstream SDK API shape is verified
-// against actual hardware, only this file changes.
+// Thin wrapper over @evenrealities/even_hub_sdk. The rest of the
+// plugin imports from here so the SDK's surface stays in one place.
 //
-// Confirmed from the published docs (hub.evenrealities.com/docs):
-//   * Input subscription: `bridge.onEvenHubEvent(event => { ... })`
-//     with `event.textEvent.eventType` discriminated by
-//     `OsEventTypeList.{CLICK_EVENT|DOUBLE_CLICK_EVENT|
-//      SCROLL_TOP_EVENT|SCROLL_BOTTOM_EVENT}`.
-//   * Render primitives: TextContainerProperty, scrollable list (≤20
-//     items × 64 chars), textContainerUpgrade / rebuildPageContainer
-//     for updates. Containers carry `isEventCapture: 1` when they own
-//     input focus.
-//   * Display: 576×288 px, 4-bit greyscale.
+// Lifecycle:
+//   1. `waitForEvenAppBridge()` resolves once the host (Even App
+//      WebView) is ready to receive messages.
+//   2. First call to `render` issues `createStartUpPageContainer`.
+//   3. Subsequent renders pick between `textContainerUpgrade`
+//      (cheap, flicker-free, text-only change) and
+//      `rebuildPageContainer` (layout change, list contents change).
 //
-// TODO(SDK): the exact import paths and constructor shapes below are
-// inferred from the docs' prose and need to be checked against the
-// installed package once `npm install` runs. Adjust the imports and
-// the bodies of the `render*` functions — keep the exported function
-// signatures stable so the screens don't need to change.
+// Layout primitives: see `TextContainerProperty` / `ListContainerProperty`
+// in @evenrealities/even_hub_sdk/dist/index.d.ts. Page limits
+// (per SDK): max 8 text containers, max 4 images, 1–12 total.
+//
+// Input: the SDK delivers a single `EvenHubEvent` per host event;
+// the field that's populated (`textEvent` / `listEvent` / `sysEvent`)
+// tells you which container raised it. Only the container with
+// `isEventCapture: 1` raises events for that page.
 
-// @ts-expect-error — SDK types may not match this import shape; verify
-// after `npm install` and adjust here only.
-import { bridge, OsEventTypeList } from "@evenrealities/even_hub_sdk";
+import {
+  CreateStartUpPageContainer,
+  EvenAppBridge,
+  ListContainerProperty,
+  ListItemContainerProperty,
+  OsEventTypeList,
+  RebuildPageContainer,
+  StartUpPageCreateResult,
+  TextContainerProperty,
+  TextContainerUpgrade,
+  waitForEvenAppBridge,
+  type EvenHubEvent,
+} from "@evenrealities/even_hub_sdk";
+
+// ---- canvas + layout constants ----
+
+// G2 HUD per the Even Hub docs: 576×288, 4-bit greyscale per eye.
+const SCREEN_W = 576;
+const SCREEN_H = 288;
+const PADDING = 8;
+
+// Reserved container IDs — chosen by us and kept stable for the
+// lifetime of the page so `textContainerUpgrade` knows what to update.
+const TEXT_ID = 1;
+const LIST_ID = 2;
+
+// Geometry presets. Text-only fills the page; text+list shrinks the
+// text to a header strip on top and gives the list everything below.
+const TEXT_FULL = {
+  xPosition: 0,
+  yPosition: 0,
+  width: SCREEN_W,
+  height: SCREEN_H,
+  paddingLength: PADDING,
+};
+
+const TEXT_HEADER = {
+  xPosition: 0,
+  yPosition: 0,
+  width: SCREEN_W,
+  height: 48,
+  paddingLength: PADDING,
+};
+
+const LIST_BELOW_HEADER = {
+  xPosition: 0,
+  yPosition: 48,
+  width: SCREEN_W,
+  height: SCREEN_H - 48,
+  paddingLength: PADDING,
+};
+
+// ---- public types ----
+
+export interface RenderPlan {
+  /** Text lines, top-to-bottom. Joined with "\n"; firmware wraps. */
+  lines: string[];
+  /** Optional native scrollable list. ≤20 items × ≤64 chars (SDK). */
+  list?: { items: string[] };
+}
 
 export type InputEvent = "press" | "double_press" | "swipe_up" | "swipe_down";
-
 export type InputHandler = (event: InputEvent) => void;
 
+// ---- bridge bootstrap ----
+
+let bridgePromise: Promise<EvenAppBridge> | null = null;
+
+function bridge(): Promise<EvenAppBridge> {
+  if (!bridgePromise) bridgePromise = waitForEvenAppBridge();
+  return bridgePromise;
+}
+
+// ---- input ----
+
 let currentHandler: InputHandler | null = null;
-let subscribed = false;
+let unsubscribe: (() => void) | null = null;
 
 export function onInput(handler: InputHandler): void {
   currentHandler = handler;
-  if (subscribed) return;
-  subscribed = true;
+  if (unsubscribe) return;
 
-  bridge.onEvenHubEvent((event: { textEvent?: { eventType?: number } }) => {
-    const eventType = event.textEvent?.eventType;
-    const mapped = mapEventType(eventType);
-    if (mapped && currentHandler) currentHandler(mapped);
+  void bridge().then((b) => {
+    unsubscribe = b.onEvenHubEvent((event: EvenHubEvent) => {
+      const mapped = mapInput(event);
+      if (mapped && currentHandler) currentHandler(mapped);
+    });
   });
 }
 
-function mapEventType(eventType: number | undefined): InputEvent | null {
+function mapInput(event: EvenHubEvent): InputEvent | null {
+  // Whichever container raised the event, we only care about the
+  // four user-input types. Sys events (foreground enter/exit, IMU,
+  // …) are ignored at this layer.
+  const eventType =
+    event.textEvent?.eventType ??
+    event.listEvent?.eventType ??
+    (event.sysEvent?.eventType as OsEventTypeList | undefined);
+
   switch (eventType) {
     case OsEventTypeList.CLICK_EVENT:
-    case undefined:
       return "press";
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       return "double_press";
@@ -58,26 +131,124 @@ function mapEventType(eventType: number | undefined): InputEvent | null {
   }
 }
 
-// ---- rendering ----
+// ---- render ----
 //
-// A "render plan" is a flat description of what should appear on the
-// HUD; screens build one and pass it here. This module is responsible
-// for diffing against the current frame and calling the right SDK
-// upgrade function. For v1, just full-rebuild every render — the SDK
-// docs say textContainerUpgrade is flicker-free, but we'll wire that
-// in once we can measure flicker on hardware.
+// State machine — `null` means the page hasn't been created yet; the
+// first render must use `createStartUpPageContainer` rather than
+// `rebuildPageContainer`. After that, we diff against `lastPlan` to
+// decide between the cheap text upgrade and a full rebuild.
 
-export interface RenderPlan {
-  // Lines of text, top to bottom. Wraps automatically at container width.
-  lines: string[];
-  // Optional scrollable list (used by the Habits screen).
-  list?: { items: string[] };
-}
+type MountState =
+  | { kind: "unmounted" }
+  | { kind: "text"; lastText: string }
+  | { kind: "text+list"; lastText: string; lastItems: string[] };
+
+let mount: MountState = { kind: "unmounted" };
+
+// Serialize renders so two `render()` calls in the same tick don't
+// race the SDK (each method is a postMessage round-trip).
+let pending: Promise<void> = Promise.resolve();
 
 export function render(plan: RenderPlan): void {
-  // TODO(SDK): replace with the actual rebuildPageContainer +
-  // TextContainerProperty composition. Until then, this is a no-op
-  // shim that still lets the rest of the app compile and run in dev.
-  // eslint-disable-next-line no-console
-  console.log("[glasses.render]", plan);
+  pending = pending.then(() => doRender(plan)).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("[glasses.render] failed", err);
+  });
+}
+
+async function doRender(plan: RenderPlan): Promise<void> {
+  const b = await bridge();
+  const text = plan.lines.join("\n");
+  const targetKind = plan.list ? "text+list" : "text";
+
+  if (mount.kind === "unmounted") {
+    const res = await b.createStartUpPageContainer(buildCreate(text, plan.list?.items));
+    if (res !== StartUpPageCreateResult.success) {
+      // eslint-disable-next-line no-console
+      console.warn("[glasses] createStartUpPageContainer:", res);
+      return;
+    }
+    mount = plan.list
+      ? { kind: "text+list", lastText: text, lastItems: plan.list.items }
+      : { kind: "text", lastText: text };
+    return;
+  }
+
+  // Layout changed (added/removed list, or list contents changed) →
+  // full rebuild. The SDK doesn't expose a list-items upgrade, so
+  // any list change is structural.
+  const needsRebuild =
+    mount.kind !== targetKind ||
+    (mount.kind === "text+list" &&
+      plan.list &&
+      !arrayEqual(mount.lastItems, plan.list.items));
+
+  if (needsRebuild) {
+    await b.rebuildPageContainer(buildRebuild(text, plan.list?.items));
+    mount = plan.list
+      ? { kind: "text+list", lastText: text, lastItems: plan.list.items }
+      : { kind: "text", lastText: text };
+    return;
+  }
+
+  // Same layout, possibly new text — cheap upgrade.
+  if (text !== mount.lastText) {
+    await b.textContainerUpgrade(
+      new TextContainerUpgrade({ containerID: TEXT_ID, content: text }),
+    );
+    mount = { ...mount, lastText: text };
+  }
+}
+
+// ---- builders ----
+
+function buildCreate(text: string, items?: string[]): CreateStartUpPageContainer {
+  return new CreateStartUpPageContainer({
+    containerTotalNum: items ? 2 : 1,
+    textObject: [textContainer(text, items !== undefined)],
+    listObject: items ? [listContainer(items)] : undefined,
+  });
+}
+
+function buildRebuild(text: string, items?: string[]): RebuildPageContainer {
+  return new RebuildPageContainer({
+    containerTotalNum: items ? 2 : 1,
+    textObject: [textContainer(text, items !== undefined)],
+    listObject: items ? [listContainer(items)] : undefined,
+  });
+}
+
+function textContainer(content: string, withList: boolean): TextContainerProperty {
+  const geo = withList ? TEXT_HEADER : TEXT_FULL;
+  return new TextContainerProperty({
+    ...geo,
+    containerID: TEXT_ID,
+    containerName: "trellis-text",
+    // Capture input on the text container so swipes always switch
+    // screens. We forgo native list scrolling — habits are capped at
+    // 10 items by the server, so the whole list fits the HUD anyway.
+    isEventCapture: 1,
+    content,
+  });
+}
+
+function listContainer(items: string[]): ListContainerProperty {
+  // SDK: max 20 items, max 64 chars each.
+  const trimmed = items.slice(0, 20).map((s) => s.slice(0, 64));
+  return new ListContainerProperty({
+    ...LIST_BELOW_HEADER,
+    containerID: LIST_ID,
+    containerName: "trellis-list",
+    isEventCapture: 0,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: trimmed.length,
+      itemName: trimmed,
+    }),
+  });
+}
+
+function arrayEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }

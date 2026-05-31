@@ -96,12 +96,18 @@ point at a local Trellis (`http://localhost:4000`) instead of prod.
 
 ## Status
 
-This is a **v0 scaffold**, not yet flown on hardware. Specifically:
-
-- [ ] `src/glasses.ts` import path + `render()` body need to be
-  reconciled with the actual `@evenrealities/even_hub_sdk` once
-  installed. Search for `TODO(SDK)` to find every spot. The other
-  modules should not need changes.
+- [x] SDK wired (`@evenrealities/even_hub_sdk@0.0.10`) — `glasses.ts`
+  uses the real bridge lifecycle: `waitForEvenAppBridge` →
+  `createStartUpPageContainer` → `textContainerUpgrade` for cheap
+  text-only updates, `rebuildPageContainer` when the layout changes
+  or the list contents change. Input routed via `onEvenHubEvent`.
+- [x] Typecheck + `vite build` pass (~30 kB gzipped).
+- [ ] **Not yet flown on hardware.** Container geometry, font
+  rendering, and event-capture behaviour need on-device verification.
+  Suspect points: text wrapping at the chosen widths, whether the
+  `text+list` layout reads well, and whether placing
+  `isEventCapture: 1` on the text container (rather than the list)
+  is the right call for the Habits screen.
 - [ ] `app.json` manifest not committed — run `npx evenhub init` to
   generate it locally.
 - [ ] Pair screen's 6-char input UX needs to land on whatever the
