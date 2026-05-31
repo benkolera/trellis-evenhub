@@ -86,7 +86,7 @@ class Store {
     this.closeStream();
     if (!isPaired()) return;
     this.stream = connectStream({
-      onChange: () => void this.poll(),
+      onChange: () => this.notifyPush(),
       onStatus: (streamStatus) => this.set({ streamStatus }),
     });
   }
@@ -102,6 +102,17 @@ class Store {
   /** User-triggered refresh (double-press on the HUD, button on the phone). */
   forceRefresh(): Promise<void> {
     return this.poll();
+  }
+
+  /**
+   * Called by the SSE client on any server-pushed event. Bumps
+   * `changeSeq` directly (so HUD subscribers wake even if the state
+   * diff hasn't moved — e.g. a "Send test push" from Settings) AND
+   * kicks off a refresh so any real change is reflected.
+   */
+  notifyPush(): void {
+    this.set({ changeSeq: this.snapshot.changeSeq + 1 });
+    void this.poll();
   }
 
   private tick(): void {
