@@ -34,12 +34,17 @@ let cache: Cache | null = null;
 let bridge: EvenAppBridge | null = null;
 
 /**
- * Boot-time hydration. Resolves once the persisted state has been
- * loaded (or the bridge timed out and we fell back to localStorage).
- * Returns whether the SDK bridge is available — the HUD path needs
- * that and there's no point starting it if it isn't.
+ * Boot-time hydration. Tries to read persisted state from the Even
+ * App's bridge storage, falling back to native localStorage after a
+ * short timeout so dev preview in a desktop browser still works.
+ *
+ * Does NOT gate the HUD — even if the timeout fires, the bridge may
+ * still come ready a couple of seconds later, and the HUD path
+ * (which waits for the bridge without a timeout of its own) will
+ * pick it up. We also keep waiting for the bridge in the background
+ * so any subsequent persists land in the durable store.
  */
-export async function load(): Promise<{ bridgeReady: boolean }> {
+export async function load(): Promise<void> {
   bridge = await waitWithTimeout(waitForEvenAppBridge(), BRIDGE_TIMEOUT_MS);
 
   if (bridge) {
@@ -56,9 +61,15 @@ export async function load(): Promise<{ bridgeReady: boolean }> {
       baseUrl: nonEmpty(localStorage.getItem(KEY_BASE_URL)) ?? DEFAULT_BASE_URL,
       token: nonEmpty(localStorage.getItem(KEY_TOKEN)),
     };
+    // The bridge may still come ready after our timeout — keep waiting
+    // so future setLocalStorage calls hit the durable store instead of
+    // the WebView's volatile localStorage.
+    void waitForEvenAppBridge()
+      .then((b) => {
+        bridge = b;
+      })
+      .catch(() => {});
   }
-
-  return { bridgeReady: bridge !== null };
 }
 
 export function getBaseUrl(): string {

@@ -7,6 +7,11 @@
 // is invisible when launched from the glasses menu, and the HUD
 // calls are harmless background no-ops when launched from the app
 // menu. Both surfaces share a single `store` so they always agree.
+//
+// Critically, the HUD is started without waiting on the storage
+// timeout — the SDK bridge can take longer than a couple of seconds
+// to come ready on a fresh install, and `glasses.ts` already waits
+// on the bridge internally with no timeout of its own.
 
 import { startHud } from "./hud";
 import { mountPhoneUi } from "./phone";
@@ -16,14 +21,18 @@ import { store } from "./store";
 void boot();
 
 async function boot(): Promise<void> {
-  // Hydrate the bearer token + base URL from the Even App's native
-  // storage (which survives plugin reinstalls — the WebView's
-  // own localStorage does NOT). Falls back to localStorage if the
-  // SDK bridge isn't available within a couple of seconds.
-  const { bridgeReady } = await loadStorage();
-
-  store.start();
+  // Mount the phone UI and start the HUD immediately. The phone UI
+  // will re-render once the store hydrates; the HUD just queues its
+  // first frame behind `waitForEvenAppBridge()`.
   mountPhoneUi();
+  startHud();
 
-  if (bridgeReady) startHud();
+  // Hydrate token + base URL from the Even App's native storage
+  // (which survives reinstalls; the WebView's own localStorage does
+  // not). Falls back to localStorage if the bridge times out.
+  await loadStorage();
+
+  // Now that the token is in cache, polling and the SSE stream can
+  // start using it.
+  store.start();
 }
