@@ -75,9 +75,9 @@ function bindBaseUrl(): void {
   const save = document.getElementById("base-url-save") as HTMLButtonElement | null;
   if (!input || !save) return;
   input.value = getBaseUrl();
-  save.addEventListener("click", () => {
+  save.addEventListener("click", async () => {
     if (input.value) {
-      setBaseUrl(input.value);
+      await setBaseUrl(input.value);
       save.textContent = "Saved";
       setTimeout(() => (save.textContent = "Save"), 1200);
     }
@@ -93,7 +93,7 @@ function bindUnpair(): void {
     try {
       await apiUnpair();
     } catch {
-      clearToken();
+      await clearToken();
     }
     store.notifyUnpaired();
     btn.textContent = "Unpair this device";

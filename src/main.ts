@@ -8,27 +8,22 @@
 // calls are harmless background no-ops when launched from the app
 // menu. Both surfaces share a single `store` so they always agree.
 
-import { waitForEvenAppBridge } from "@evenrealities/even_hub_sdk";
-
 import { startHud } from "./hud";
 import { mountPhoneUi } from "./phone";
+import { load as loadStorage } from "./storage";
 import { store } from "./store";
 
 void boot();
 
 async function boot(): Promise<void> {
-  // Backend polling starts immediately. The phone UI is also safe to
-  // mount before the bridge resolves (it only touches the DOM).
+  // Hydrate the bearer token + base URL from the Even App's native
+  // storage (which survives plugin reinstalls — the WebView's
+  // own localStorage does NOT). Falls back to localStorage if the
+  // SDK bridge isn't available within a couple of seconds.
+  const { bridgeReady } = await loadStorage();
+
   store.start();
   mountPhoneUi();
 
-  // The HUD needs the SDK bridge; if it never resolves (browser
-  // preview, simulator without a launch push), we just stay phone-only.
-  try {
-    await waitForEvenAppBridge();
-    startHud();
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("[trellis] SDK bridge unavailable, running phone-only", err);
-  }
+  if (bridgeReady) startHud();
 }

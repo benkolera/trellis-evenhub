@@ -37,7 +37,7 @@ async function request(
     } catch {
       // ignore
     }
-    if (res.status === 401) clearToken();
+    if (res.status === 401) void clearToken();
     throw new ApiError(res.status, body);
   }
   return res;
@@ -53,7 +53,7 @@ export async function pair(
     body: JSON.stringify({ code, label }),
   });
   const data = (await res.json()) as { token: string; label: string };
-  setToken(data.token);
+  await setToken(data.token);
   return data;
 }
 
@@ -70,6 +70,6 @@ export async function unpair(): Promise<void> {
   try {
     await request("/api/g2/pairing", { method: "DELETE" });
   } finally {
-    clearToken();
+    await clearToken();
   }
 }
