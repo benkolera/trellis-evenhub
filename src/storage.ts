@@ -4,7 +4,7 @@
 const KEY_BASE_URL = "trellis.base_url";
 const KEY_TOKEN = "trellis.token";
 
-const DEFAULT_BASE_URL = "https://trellis.benkolera.com";
+const DEFAULT_BASE_URL = "https://electricbrain.benkolera.com";
 
 export function getBaseUrl(): string {
   return localStorage.getItem(KEY_BASE_URL) || DEFAULT_BASE_URL;
