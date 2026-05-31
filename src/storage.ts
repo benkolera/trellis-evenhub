@@ -1,14 +1,22 @@
 // Persistent settings — base URL + bearer token.
 //
-// Critically: we go through `bridge.setLocalStorage` /
-// `bridge.getLocalStorage`, NOT the WebView's native `localStorage`.
-// The WebView's storage is wiped every time the user reinstalls the
-// plugin via the dev portal, but the bridge storage is owned by the
-// Even App itself (scoped to our package_id) and survives reinstalls.
+// Two backing stores:
 //
-// The bridge API is async; rather than make every consumer async too,
-// we read once at boot via `load()`, cache in memory, and persist
-// writes back to the bridge (best-effort). All reads stay synchronous.
+//   * **Bridge storage** (`bridge.setLocalStorage`) — owned by the
+//     Even App, scoped to our package_id. Survives plugin reinstalls.
+//     Async, occasionally slow to come ready.
+//
+//   * **Native localStorage** — fast and synchronous, but the Even
+//     App wipes it on every plugin reinstall. Used as a session-local
+//     fallback when the bridge hasn't come ready yet and for dev
+//     preview in a desktop browser.
+//
+// Strategy: read from bridge if it's available within ~2s, otherwise
+// fall back to localStorage and keep waiting for the bridge in the
+// background. Persists are *dual-written* — localStorage immediately
+// for fast read-after-write, and bridge once it's ready. When the
+// bridge becomes ready late, we backfill anything currently in cache
+// so reinstalls pick it up next launch.
 
 import {
   waitForEvenAppBridge,
@@ -20,10 +28,15 @@ const KEY_TOKEN = "trellis.token";
 
 const DEFAULT_BASE_URL = "https://electricbrain.benkolera.com";
 
-// Bridge gets up to 2s to come ready before we give up and fall back
-// to native localStorage. Dev preview in a desktop browser will hit
-// this — we still want the app to work for iteration.
-const BRIDGE_TIMEOUT_MS = 2_000;
+// Initial-read budget — phone UI sees the right paired state within
+// this window or briefly flashes the pair view while we hydrate.
+const LOAD_TIMEOUT_MS = 2_000;
+
+// Writes can afford to wait longer — the bridge usually shows up
+// within a few seconds even on a cold install.
+const PERSIST_TIMEOUT_MS = 8_000;
+
+export type StorageMode = "loading" | "bridge" | "local-only";
 
 interface Cache {
   baseUrl: string;
@@ -32,43 +45,70 @@ interface Cache {
 
 let cache: Cache | null = null;
 let bridge: EvenAppBridge | null = null;
+let mode: StorageMode = "loading";
+const modeListeners = new Set<(mode: StorageMode) => void>();
 
 /**
- * Boot-time hydration. Tries to read persisted state from the Even
- * App's bridge storage, falling back to native localStorage after a
- * short timeout so dev preview in a desktop browser still works.
- *
- * Does NOT gate the HUD — even if the timeout fires, the bridge may
- * still come ready a couple of seconds later, and the HUD path
- * (which waits for the bridge without a timeout of its own) will
- * pick it up. We also keep waiting for the bridge in the background
- * so any subsequent persists land in the durable store.
+ * One-time boot hydration. Returns when the cache is hot enough for
+ * the rest of the app to read. If the bridge takes longer than
+ * `LOAD_TIMEOUT_MS`, we fall back to localStorage for the initial
+ * read but keep waiting in the background — when the bridge does
+ * arrive, we both start using it AND backfill whatever's currently
+ * in cache, so a token that was paired in this session against
+ * localStorage won't be lost on the next reinstall.
  */
 export async function load(): Promise<void> {
-  bridge = await waitWithTimeout(waitForEvenAppBridge(), BRIDGE_TIMEOUT_MS);
+  const initial = await waitWithTimeout(waitForEvenAppBridge(), LOAD_TIMEOUT_MS);
 
-  if (bridge) {
+  if (initial) {
+    bridge = initial;
+    setMode("bridge");
     const [baseUrl, token] = await Promise.all([
-      bridge.getLocalStorage(KEY_BASE_URL),
-      bridge.getLocalStorage(KEY_TOKEN),
+      initial.getLocalStorage(KEY_BASE_URL),
+      initial.getLocalStorage(KEY_TOKEN),
     ]);
     cache = {
-      baseUrl: nonEmpty(baseUrl) ?? DEFAULT_BASE_URL,
-      token: nonEmpty(token),
+      baseUrl:
+        nonEmpty(baseUrl) ??
+        nonEmpty(localStorage.getItem(KEY_BASE_URL)) ??
+        DEFAULT_BASE_URL,
+      token: nonEmpty(token) ?? nonEmpty(localStorage.getItem(KEY_TOKEN)),
     };
-  } else {
-    cache = {
-      baseUrl: nonEmpty(localStorage.getItem(KEY_BASE_URL)) ?? DEFAULT_BASE_URL,
-      token: nonEmpty(localStorage.getItem(KEY_TOKEN)),
-    };
-    // The bridge may still come ready after our timeout — keep waiting
-    // so future setLocalStorage calls hit the durable store instead of
-    // the WebView's volatile localStorage.
-    void waitForEvenAppBridge()
-      .then((b) => {
-        bridge = b;
-      })
-      .catch(() => {});
+    return;
+  }
+
+  // Bridge hasn't come ready in time — initial cache from localStorage.
+  setMode("local-only");
+  cache = {
+    baseUrl:
+      nonEmpty(localStorage.getItem(KEY_BASE_URL)) ?? DEFAULT_BASE_URL,
+    token: nonEmpty(localStorage.getItem(KEY_TOKEN)),
+  };
+
+  // Keep waiting for the bridge in the background. When it shows up,
+  // copy whatever's in cache (including a token paired in this
+  // session) into bridge storage so the next launch finds it.
+  void waitForEvenAppBridge()
+    .then((b) => {
+      bridge = b;
+      setMode("bridge");
+      void backfill();
+    })
+    .catch(() => {
+      // Bridge truly unavailable (dev preview); stay in local-only.
+    });
+}
+
+async function backfill(): Promise<void> {
+  if (!bridge || !cache) return;
+  try {
+    await Promise.all([
+      bridge.setLocalStorage(KEY_BASE_URL, cache.baseUrl),
+      bridge.setLocalStorage(KEY_TOKEN, cache.token ?? ""),
+    ]);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[storage] backfill to bridge failed", err);
   }
 }
 
@@ -100,6 +140,18 @@ export function isPaired(): boolean {
   return !!cache?.token;
 }
 
+export function getStorageMode(): StorageMode {
+  return mode;
+}
+
+export function onStorageModeChange(
+  listener: (mode: StorageMode) => void,
+): () => void {
+  modeListeners.add(listener);
+  listener(mode);
+  return () => modeListeners.delete(listener);
+}
+
 // ---- internals ----
 
 function ensureCache(): Cache {
@@ -107,21 +159,37 @@ function ensureCache(): Cache {
   return cache;
 }
 
+function setMode(next: StorageMode): void {
+  if (mode === next) return;
+  mode = next;
+  for (const listener of modeListeners) listener(mode);
+}
+
+/**
+ * Dual-write: localStorage immediately for fast read-after-write,
+ * bridge as soon as it's available (waiting up to PERSIST_TIMEOUT_MS).
+ * Writes can land out of order across the two stores; that's fine
+ * because reads always prefer bridge if it has a value.
+ */
 async function persist(key: string, value: string): Promise<void> {
-  if (bridge) {
-    try {
-      await bridge.setLocalStorage(key, value);
-      return;
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn("[storage] bridge.setLocalStorage failed, using localStorage", err);
-    }
-  }
   try {
     localStorage.setItem(key, value);
   } catch {
-    // Best-effort; if even localStorage is denied, we keep the
-    // in-memory cache for this session and lose it on next launch.
+    // Best-effort; the cache still has the value for this session.
+  }
+
+  const b = bridge ?? (await waitWithTimeout(waitForEvenAppBridge(), PERSIST_TIMEOUT_MS));
+  if (b) {
+    if (!bridge) {
+      bridge = b;
+      setMode("bridge");
+    }
+    try {
+      await b.setLocalStorage(key, value);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[storage] bridge.setLocalStorage failed", err);
+    }
   }
 }
 

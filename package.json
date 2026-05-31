@@ -1,6 +1,6 @@
 {
   "name": "trellis-evenhub",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Trellis on Even Realities G2 — surfaces now / next / focus / habits on the glasses HUD.",
   "type": "module",

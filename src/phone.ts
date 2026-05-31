@@ -8,7 +8,9 @@ import { ApiError, pair as apiPair, unpair as apiUnpair } from "./api";
 import {
   clearToken,
   getBaseUrl,
+  onStorageModeChange,
   setBaseUrl,
+  type StorageMode,
 } from "./storage";
 import { store, type Snapshot } from "./store";
 import { formatHhMm, formatMmSs } from "./timer";
@@ -29,7 +31,28 @@ export function mountPhoneUi(): void {
     if (snapshot.paired) renderStatePanel(snapshot);
   });
 
+  onStorageModeChange(renderStoragePill);
+
   app.hidden = false;
+}
+
+function renderStoragePill(mode: StorageMode): void {
+  const el = document.getElementById("storage-status");
+  if (!el) return;
+  const { label, cls } = storagePill(mode);
+  el.textContent = label;
+  el.className = `pill ${cls}`;
+}
+
+function storagePill(mode: StorageMode): { label: string; cls: string } {
+  switch (mode) {
+    case "bridge":
+      return { label: "storage: bridge", cls: "pill-on" };
+    case "local-only":
+      return { label: "storage: local-only", cls: "pill-warn" };
+    case "loading":
+      return { label: "storage: loading", cls: "pill-warn" };
+  }
 }
 
 // ---- pairing ----
